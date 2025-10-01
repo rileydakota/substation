@@ -29,6 +29,10 @@ func init() {
 		if err := funcframework.RegisterCloudEventFunctionContext(context.Background(), "/", cloudStorageHandler); err != nil {
 			panic(fmt.Errorf("init handler %s: %v", handler, err))
 		}
+	case "GCP_PUBSUB":
+		if err := funcframework.RegisterCloudEventFunctionContext(context.Background(), "/", pubSubHandler); err != nil {
+			panic(fmt.Errorf("init handler %s: %v", handler, err))
+		}
 	default:
 		panic(fmt.Errorf("init handler %s: %v", handler, errFunctionMissingHandler))
 	}
