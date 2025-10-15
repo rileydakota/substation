@@ -17,6 +17,7 @@ import (
 
 	"github.com/brexhq/substation/v2/internal/bufio"
 	"github.com/brexhq/substation/v2/internal/channel"
+	"github.com/brexhq/substation/v2/internal/log"
 	"github.com/brexhq/substation/v2/internal/media"
 )
 
@@ -138,6 +139,8 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 			return fmt.Errorf("missing required fields: bucket=%q name=%q", storageObj.Bucket, storageObj.Name)
 		}
 
+		log.WithField("bucket", storageObj.Bucket).WithField("object", storageObj.Name).Info("Processing GCS object.")
+
 		// Create a storage client
 		client, err := storage.NewClient(ctx)
 		if err != nil {
@@ -161,6 +164,8 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 		if _, err := io.Copy(dst, reader); err != nil {
 			return fmt.Errorf("io.Copy: %w", err)
 		}
+
+		log.WithField("bucket", storageObj.Bucket).WithField("object", storageObj.Name).Info("Retrieved GCS object successfully.")
 
 		// Determines if the file should be treated as text.
 		// Text files are decompressed by the bufio package
@@ -212,6 +217,8 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 			msg := message.New().SetData(r).SetMetadata(metadata)
 			ch.Send(msg)
 
+			log.WithField("bucket", storageObj.Bucket).WithField("object", storageObj.Name).Info("Finished processing GCS object.")
+
 			return nil
 		}
 
@@ -238,6 +245,8 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 		if err := scanner.Err(); err != nil {
 			return err
 		}
+
+		log.WithField("bucket", storageObj.Bucket).WithField("object", storageObj.Name).Info("Finished processing GCS object.")
 
 		return nil
 	})
