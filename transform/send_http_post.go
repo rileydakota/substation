@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/brexhq/substation/v2/config"
 	"github.com/brexhq/substation/v2/message"
@@ -14,6 +15,7 @@ import (
 	"github.com/brexhq/substation/v2/internal/aggregate"
 	iconfig "github.com/brexhq/substation/v2/internal/config"
 	"github.com/brexhq/substation/v2/internal/http"
+	"github.com/brexhq/substation/v2/internal/log"
 	"github.com/brexhq/substation/v2/internal/secrets"
 )
 
@@ -172,7 +174,15 @@ func (tf *sendHTTPPost) send(ctx context.Context, key string) error {
 		return err
 	}
 
+	// Calculate batch metrics
+	eventCount := tf.agg.Count(key)
+	var batchSize int
 	for _, d := range data {
+		batchSize += len(d)
+	}
+
+	for _, d := range data {
+		start := time.Now()
 		resp, err := tf.client.Post(ctx, url, d, headers...)
 		if err != nil {
 			return err
@@ -181,6 +191,15 @@ func (tf *sendHTTPPost) send(ctx context.Context, key string) error {
 		//nolint:errcheck // Response body is discarded to avoid resource leaks.
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
+
+		duration := time.Since(start)
+		log.WithField("transform", tf.conf.ID).
+			WithField("url", url).
+			WithField("status_code", resp.StatusCode).
+			WithField("batch_size", batchSize).
+			WithField("event_count", eventCount).
+			WithField("duration_ms", duration.Milliseconds()).
+			Debug("Sent HTTP POST request")
 	}
 
 	return nil

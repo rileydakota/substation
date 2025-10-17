@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 
 	"cloud.google.com/go/storage"
 	cloudevents "github.com/cloudevents/sdk-go/v2"
@@ -38,17 +41,58 @@ type StorageObjectData struct {
 	Name   string `json:"name"`
 	Size   string `json:"size"`
 	// Additional fields can be added as needed
-	ContentType       string `json:"contentType,omitempty"`
-	TimeCreated       string `json:"timeCreated,omitempty"`
-	Updated           string `json:"updated,omitempty"`
-	Generation        string `json:"generation,omitempty"`
-	MetaGeneration    string `json:"metageneration,omitempty"`
-	StorageClass      string `json:"storageClass,omitempty"`
+	ContentType             string `json:"contentType,omitempty"`
+	TimeCreated             string `json:"timeCreated,omitempty"`
+	Updated                 string `json:"updated,omitempty"`
+	Generation              string `json:"generation,omitempty"`
+	MetaGeneration          string `json:"metageneration,omitempty"`
+	StorageClass            string `json:"storageClass,omitempty"`
 	TimeStorageClassUpdated string `json:"timeStorageClassUpdated,omitempty"`
 }
 
-//nolint: gocognit // Ignore cognitive complexity.
+// processingState tracks the current state of object processing for graceful shutdown logging.
+type processingState struct {
+	mu     sync.RWMutex
+	bucket string
+	object string
+	size   string
+}
+
+func (ps *processingState) set(bucket, object, size string) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.bucket = bucket
+	ps.object = object
+	ps.size = size
+}
+
+func (ps *processingState) log() {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	if ps.bucket != "" && ps.object != "" {
+		log.WithField("bucket", ps.bucket).
+			WithField("object", ps.object).
+			WithField("size", ps.size).
+			Info("Interrupted while processing GCS object due to SIGTERM")
+	}
+}
+
+// nolint: gocognit // Ignore cognitive complexity.
 func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
+	// Set up signal handling for graceful shutdown
+	var state processingState
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+
+	// Handle signals in a separate goroutine
+	go func() {
+		sig := <-sigChan
+		log.WithField("signal", sig.String()).Info("Received shutdown signal")
+		state.log()
+		// Allow the context cancellation to handle cleanup
+	}()
+	defer signal.Stop(sigChan)
+
 	// Retrieve and load configuration.
 	conf, err := getConfig(ctx)
 	if err != nil {
@@ -139,6 +183,9 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 			return fmt.Errorf("missing required fields: bucket=%q name=%q", storageObj.Bucket, storageObj.Name)
 		}
 
+		// Track current processing state for graceful shutdown
+		state.set(storageObj.Bucket, storageObj.Name, storageObj.Size)
+
 		log.WithField("bucket", storageObj.Bucket).WithField("object", storageObj.Name).Info("Processing GCS object.")
 
 		// Create a storage client
@@ -219,6 +266,9 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 
 			log.WithField("bucket", storageObj.Bucket).WithField("object", storageObj.Name).Info("Finished processing GCS object.")
 
+			// Clear state after successful processing
+			state.set("", "", "")
+
 			return nil
 		}
 
@@ -247,6 +297,9 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 		}
 
 		log.WithField("bucket", storageObj.Bucket).WithField("object", storageObj.Name).Info("Finished processing GCS object.")
+
+		// Clear state after successful processing
+		state.set("", "", "")
 
 		return nil
 	})
