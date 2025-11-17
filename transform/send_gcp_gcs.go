@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -20,10 +21,16 @@ import (
 )
 
 const (
-	gcpStorageResourcePrefix = "projects/_/buckets/"
+	gcpGCSResourcePrefix = "projects/_/buckets/"
 )
 
-type sendGCPStorageConfig struct {
+type sendGCPGCSConfig struct {
+	// StorageClass is the storage class of the object.
+	// Valid values: STANDARD, NEARLINE, COLDLINE, ARCHIVE
+	StorageClass string `json:"storage_class"`
+	// ChecksumAlgorithm is the algorithm used to create the checksum for the object.
+	// Valid values: CRC32C, MD5
+	ChecksumAlgorithm string `json:"checksum_algorithm"`
 	// FilePath determines how the name of the uploaded object is constructed.
 	// See filePath.New for more information.
 	FilePath file.Path `json:"file_path"`
@@ -38,30 +45,54 @@ type sendGCPStorageConfig struct {
 	GCP    iconfig.GCP    `json:"gcp"`
 }
 
-func (c *sendGCPStorageConfig) Decode(in interface{}) error {
+func (c *sendGCPGCSConfig) Decode(in interface{}) error {
 	return iconfig.Decode(in, c)
 }
 
-func (c *sendGCPStorageConfig) Validate() error {
+func (c *sendGCPGCSConfig) Validate() error {
 	if c.GCP.Resource == "" {
 		return fmt.Errorf("gcp.resource: %v", iconfig.ErrMissingRequiredOption)
 	}
 
-	if !strings.HasPrefix(c.GCP.Resource, gcpStorageResourcePrefix) {
+	if !strings.HasPrefix(c.GCP.Resource, gcpGCSResourcePrefix) {
 		return fmt.Errorf("gcp.resource: %v", iconfig.ErrInvalidOption)
+	}
+
+	// Validate storage class if provided
+	if c.StorageClass != "" {
+		validClasses := map[string]bool{
+			"STANDARD": true,
+			"NEARLINE": true,
+			"COLDLINE": true,
+			"ARCHIVE":  true,
+		}
+		if !validClasses[c.StorageClass] {
+			return fmt.Errorf("storage_class: %v", iconfig.ErrInvalidOption)
+		}
+	}
+
+	// Validate checksum algorithm if provided
+	if c.ChecksumAlgorithm != "" {
+		validAlgos := map[string]bool{
+			"CRC32C": true,
+			"MD5":    true,
+		}
+		if !validAlgos[c.ChecksumAlgorithm] {
+			return fmt.Errorf("checksum_algorithm: %v", iconfig.ErrInvalidOption)
+		}
 	}
 
 	return nil
 }
 
-func newSendGCPStorage(ctx context.Context, cfg config.Config) (*sendGCPStorage, error) {
-	conf := sendGCPStorageConfig{}
+func newSendGCPGCS(ctx context.Context, cfg config.Config) (*sendGCPGCS, error) {
+	conf := sendGCPGCSConfig{}
 	if err := conf.Decode(cfg.Settings); err != nil {
-		return nil, fmt.Errorf("transform send_gcp_storage: %v", err)
+		return nil, fmt.Errorf("transform send_gcp_gcs: %v", err)
 	}
 
 	if conf.ID == "" {
-		conf.ID = "send_gcp_storage"
+		conf.ID = "send_gcp_gcs"
 	}
 
 	if err := conf.Validate(); err != nil {
@@ -70,12 +101,22 @@ func newSendGCPStorage(ctx context.Context, cfg config.Config) (*sendGCPStorage,
 
 	// Extract the bucket name from the resource name.
 	// projects/_/buckets/my-bucket -> my-bucket
-	bucket := strings.TrimPrefix(conf.GCP.Resource, gcpStorageResourcePrefix)
+	bucket := strings.TrimPrefix(conf.GCP.Resource, gcpGCSResourcePrefix)
 
-	tf := sendGCPStorage{
+	tf := sendGCPGCS{
 		conf:   conf,
 		bucket: bucket,
 	}
+
+	// Set storage class (defaults to STANDARD if not specified)
+	if conf.StorageClass == "" {
+		tf.sclass = "STANDARD"
+	} else {
+		tf.sclass = conf.StorageClass
+	}
+
+	// Set checksum algorithm if specified
+	tf.calgo = conf.ChecksumAlgorithm
 
 	agg, err := aggregate.New(aggregate.Config{
 		Count:    conf.Batch.Count,
@@ -109,17 +150,19 @@ func newSendGCPStorage(ctx context.Context, cfg config.Config) (*sendGCPStorage,
 	return &tf, nil
 }
 
-type sendGCPStorage struct {
-	conf   sendGCPStorageConfig
+type sendGCPGCS struct {
+	conf   sendGCPGCSConfig
 	client *storage.Client
 	bucket string
+	sclass string
+	calgo  string
 
 	mu     sync.Mutex
 	agg    *aggregate.Aggregate
 	tforms []Transformer
 }
 
-func (tf *sendGCPStorage) Transform(ctx context.Context, msg *message.Message) ([]*message.Message, error) {
+func (tf *sendGCPGCS) Transform(ctx context.Context, msg *message.Message) ([]*message.Message, error) {
 	tf.mu.Lock()
 	defer tf.mu.Unlock()
 
@@ -157,12 +200,12 @@ func (tf *sendGCPStorage) Transform(ctx context.Context, msg *message.Message) (
 	return []*message.Message{msg}, nil
 }
 
-func (tf *sendGCPStorage) String() string {
+func (tf *sendGCPGCS) String() string {
 	b, _ := json.Marshal(tf.conf)
 	return string(b)
 }
 
-func (tf *sendGCPStorage) send(ctx context.Context, key string) error {
+func (tf *sendGCPGCS) send(ctx context.Context, key string) error {
 	p := tf.conf.FilePath
 	if key != "" && tf.conf.UseBatchKeyAsPrefix {
 		p.Prefix = key
@@ -217,8 +260,18 @@ func (tf *sendGCPStorage) send(ctx context.Context, key string) error {
 
 	// Set object attributes
 	writer.ContentType = mediaType
+	writer.StorageClass = tf.sclass
 
-	if _, err := writer.Write(data[0]); err != nil {
+	// Set checksum algorithm if specified
+	if tf.calgo == "CRC32C" {
+		writer.SendCRC32C = true
+	} else if tf.calgo == "MD5" {
+		writer.MD5 = nil // Enable MD5 checksum verification
+	}
+
+	// Copy file contents to GCS
+	if _, err := io.Copy(writer, f); err != nil {
+		writer.Close()
 		return err
 	}
 
