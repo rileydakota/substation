@@ -537,6 +537,13 @@ local helpers = {
           type: type,
           settings: std.prune(std.mergePatch(default, helpers.abbv(settings))),
         },
+        parquet(settings={}): {
+          local type = 'format_to_parquet',
+          local default = { id: helpers.id(type, settings) },
+
+          type: type,
+          settings: std.prune(std.mergePatch(default, helpers.abbv(settings))),
+        },
       },
     },
     hash: {
@@ -950,13 +957,16 @@ local helpers = {
         },
       },
       gcp: {
-        storage(settings={}): {
-          local type = 'send_gcp_storage',
+        storage(settings={}): $.transform.send.gcp.gcs(settings=settings),
+        gcs(settings={}): {
+          local type = 'send_gcp_gcs',
           local default = {
             id: helpers.id(type, settings),
             batch: $.config.batch,
             gcp: $.config.gcp,
+            file_path: $.file_path,
             auxiliary_transforms: null,
+            storage_class: 'STANDARD',
           },
 
           local s = std.mergePatch(settings, {

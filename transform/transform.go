@@ -80,6 +80,8 @@ func New(ctx context.Context, cfg config.Config) (Transformer, error) { //nolint
 		return newFormatFromPrettyPrint(ctx, cfg)
 	case "format_from_zip":
 		return newFormatFromZip(ctx, cfg)
+	case "format_to_parquet":
+		return newFormatToParquet(ctx, cfg)
 	// Hash transforms.
 	case "hash_md5":
 		return newHashMD5(ctx, cfg)

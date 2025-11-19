@@ -194,7 +194,8 @@ func (tf *sendGCPGCS) Transform(ctx context.Context, msg *message.Message) ([]*m
 	// If data cannot be added after reset, then the batch is misconfigured.
 	tf.agg.Reset(key)
 	if ok := tf.agg.Add(key, msg.Data()); !ok {
-		return nil, fmt.Errorf("transform %s: %v", tf.conf.ID, errBatchNoMoreData)
+		return nil, fmt.Errorf("transform %s: message size %d bytes exceeds batch limits (count: %d, size: %d bytes) - %v",
+			tf.conf.ID, len(msg.Data()), tf.conf.Batch.Count, tf.conf.Batch.Size, errBatchNoMoreData)
 	}
 
 	return []*message.Message{msg}, nil
