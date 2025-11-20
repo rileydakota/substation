@@ -197,7 +197,14 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 
 		reader, err := client.Bucket(storageObj.Bucket).Object(storageObj.Name).NewReader(ctx)
 		if err != nil {
-			return fmt.Errorf("Object(%q).NewReader: %v", storageObj.Name, err)
+			// Check if object doesn't exist and exit gracefully
+		if err == storage.ErrObjectNotExist {
+			log.WithField("bucket", storageObj.Bucket).
+				WithField("object", storageObj.Name).
+				Info("Object does not exist, skipping")
+			return nil
+		}
+		return fmt.Errorf("Object(%q).NewReader: %v", storageObj.Name, err)
 		}
 		defer reader.Close()
 
