@@ -22,6 +22,7 @@ import (
 	"github.com/brexhq/substation/v2/internal/channel"
 	"github.com/brexhq/substation/v2/internal/log"
 	"github.com/brexhq/substation/v2/internal/media"
+	"strconv"
 )
 
 // PubSubMessage is the payload of a Pub/Sub event.
@@ -186,7 +187,10 @@ func pubSubHandler(ctx context.Context, e cloudevents.Event) error {
 		// Track current processing state for graceful shutdown
 		state.set(storageObj.Bucket, storageObj.Name, storageObj.Size)
 
-		log.WithField("bucket", storageObj.Bucket).WithField("object", storageObj.Name).Info("Processing GCS object.")
+		log.WithField("bucket", storageObj.Bucket).
+			WithField("object", storageObj.Name).
+			WithField("size", formatBytes(storageObj.Size)).
+			Info("Processing GCS object.")
 
 		// Create a storage client
 		client, err := storage.NewClient(ctx)
@@ -328,4 +332,26 @@ func contains(slice []string, val string) bool {
 		}
 	}
 	return false
+}
+
+// formatBytes converts a byte count string to human-readable format (e.g., "1.5 MB", "2.3 GB").
+func formatBytes(sizeStr string) string {
+	size, err := strconv.ParseInt(sizeStr, 10, 64)
+	if err != nil {
+		return sizeStr // Return original if parsing fails
+	}
+
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	return fmt.Sprintf("%.1f %s", float64(size)/float64(div), units[exp])
 }
